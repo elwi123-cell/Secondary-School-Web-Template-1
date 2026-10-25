@@ -1,1 +1,252 @@
 
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Principal Dashboard | Lae Secondary School</title>
+  <link rel="stylesheet" href="./admin.css">
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <div class="brand">Lae Secondary School <small>Principal Content Management</small></div>
+      <div class="actions" style="margin:0">
+        <a class="button secondary" href="../index.html">View website</a>
+        <button id="logout-button" type="button">Sign out</button>
+      </div>
+    </div>
+  </header>
+  <main>
+    <div class="toolbar">
+      <div>
+        <h1>Principal Dashboard</h1>
+        <div class="muted" id="signed-in-user">Verifying access…</div>
+      </div>
+      <button id="new-button" type="button">+ New content item</button>
+    </div>
+    <div class="notice"><strong>Important:</strong> This editor saves structured content to Supabase. Your existing public HTML pages will only display these edits after their page-specific CMS integration is added. Saving here does not rewrite files in GitHub.</div>
+    <div id="message" class="message" role="status" aria-live="polite"></div>
+    <div class="layout">
+      <section class="panel">
+        <div class="toolbar">
+          <h2 style="margin:0">Content items</h2>
+          <button id="refresh-button" class="secondary" type="button">Refresh</button>
+        </div>
+        <div id="entries" class="entries"><p class="muted">Loading content…</p></div>
+      </section>
+      <section class="panel">
+        <h2 id="editor-title">Create or edit content</h2>
+        <form id="editor-form">
+          <input id="record-id" type="hidden">
+          <label for="page-slug">Page filename / slug</label>
+          <select id="page-slug" required>
+            <option value="index.html">index.html — Home</option>
+            <option value="about.html">about.html — About</option>
+            <option value="leadership.html">leadership.html — Leadership</option>
+            <option value="academics.html">academics.html — Academics</option>
+            <option value="admissions.html">admissions.html — Admissions</option>
+            <option value="application.html">application.html — Application</option>
+            <option value="departments.html">departments.html — Departments</option>
+            <option value="facilities.html">facilities.html — Facilities</option>
+            <option value="fees.html">fees.html — Fees</option>
+            <option value="academic-calendar.html">academic-calendar.html — Academic calendar</option>
+            <option value="events.html">events.html — Events</option>
+            <option value="achievements.html">achievements.html — Achievements</option>
+            <option value="boarding.html">boarding.html — Boarding</option>
+            <option value="downloads.html">downloads.html — Downloads</option>
+            <option value="contact.html">contact.html — Contact</option>
+            <option value="gallery.html">gallery.html — Gallery</option>
+            <option value="laesecondary-robotics.html">laesecondary-robotics.html — Robotics</option>
+          </select>
+          <label for="section-key">Section key (unique within that page)</label>
+          <input id="section-key" type="text" required maxlength="120" placeholder="e.g. principal_message">
+          <label for="content-json">Content JSON</label>
+          <textarea id="content-json" spellcheck="false" required placeholder='{"heading":"Welcome to Lae Secondary School","text":"Enter approved website content here."}'></textarea>
+          <p class="muted" style="font-size:.84rem">Use valid JSON, for example: <code>{"heading":"School News","text":"New announcement goes here."}</code></p>
+          <div class="checkline">
+            <input id="is-published" type="checkbox">
+            <label for="is-published">Published (available for public-page integration)</label>
+          </div>
+          <div class="actions">
+            <button id="save-button" type="submit">Save content</button>
+            <button id="clear-button" class="secondary" type="button">Clear form</button>
+            <button id="delete-button" class="danger" type="button" hidden>Delete item</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  </main>
+  <footer>Lae Secondary School · Secure Principal CMS</footer>
+  <script type="module">
+    import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+    import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "./js/supabase-config.js";
+
+    const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+    const $ = (selector) => document.querySelector(selector);
+    let currentItems = [];
+
+    function message(text, type = "error") {
+      const el = $("#message");
+      el.textContent = text;
+      el.className = `message show ${type}`;
+    }
+    function clearMessage() {
+      $("#message").textContent = "";
+      $("#message").className = "message";
+    }
+
+    async function requirePrincipal() {
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      if (authError || !user) {
+        location.replace("./login.html");
+        return null;
+      }
+      const { data: admin, error } = await supabase
+        .from("cms_admins")
+        .select("user_id, role")
+        .eq("user_id", user.id)
+        .eq("role", "principal")
+        .maybeSingle();
+      if (error || !admin) {
+        await supabase.auth.signOut();
+        location.replace("./login.html");
+        return null;
+      }
+      $("#signed-in-user").textContent = `Signed in as ${user.email} · Principal`;
+      return user;
+    }
+
+    function resetForm() {
+      $("#editor-form").reset();
+      $("#record-id").value = "";
+      $("#editor-title").textContent = "Create or edit content";
+      $("#delete-button").hidden = true;
+      document.querySelectorAll(".entry").forEach((e) => e.classList.remove("active"));
+    }
+
+    function renderEntries() {
+      const container = $("#entries");
+      container.replaceChildren();
+      if (!currentItems.length) {
+        const empty = document.createElement("p");
+        empty.className = "muted";
+        empty.textContent = "No content items yet. Select “New content item” to create one.";
+        container.append(empty);
+        return;
+      }
+      for (const item of currentItems) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "entry";
+        button.dataset.id = String(item.id);
+        const title = document.createElement("strong");
+        title.textContent = `${item.page_slug} · ${item.section_key}`;
+        const meta = document.createElement("small");
+        meta.textContent = `${item.is_published ? "Published" : "Draft"} · Updated ${new Date(item.updated_at).toLocaleString()}`;
+        button.append(title, meta);
+        button.addEventListener("click", () => selectItem(item, button));
+        container.append(button);
+      }
+    }
+
+    function selectItem(item, button) {
+      document.querySelectorAll(".entry").forEach((e) => e.classList.remove("active"));
+      button.classList.add("active");
+      $("#record-id").value = item.id;
+      $("#page-slug").value = item.page_slug;
+      $("#section-key").value = item.section_key;
+      $("#content-json").value = JSON.stringify(item.content, null, 2);
+      $("#is-published").checked = item.is_published;
+      $("#editor-title").textContent = `Edit item #${item.id}`;
+      $("#delete-button").hidden = false;
+      clearMessage();
+    }
+
+    async function loadItems() {
+      $("#entries").textContent = "Loading content…";
+      const { data, error } = await supabase
+        .from("site_content")
+        .select("id, page_slug, section_key, content, is_published, updated_at, updated_by")
+        .order("page_slug", { ascending: true })
+        .order("section_key", { ascending: true });
+      if (error) {
+        message(`Could not load content: ${error.message}`);
+        $("#entries").textContent = "Unable to load content. Check table setup and RLS policies.";
+        return;
+      }
+      currentItems = data || [];
+      renderEntries();
+    }
+
+    $("#editor-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      clearMessage();
+      const saveButton = $("#save-button");
+      saveButton.disabled = true;
+      let content;
+      try {
+        content = JSON.parse($("#content-json").value);
+        if (content === null || typeof content !== "object") throw new Error("Content must be a JSON object or array.");
+      } catch (error) {
+        message(`Invalid JSON: ${error.message}`);
+        saveButton.disabled = false;
+        return;
+      }
+      const { data: { user } } = await supabase.auth.getUser();
+      const payload = {
+        page_slug: $("#page-slug").value,
+        section_key: $("#section-key").value.trim(),
+        content,
+        is_published: $("#is-published").checked,
+        updated_at: new Date().toISOString(),
+        updated_by: user?.id ?? null
+      };
+      if (!payload.section_key) {
+        message("Enter a section key.");
+        saveButton.disabled = false;
+        return;
+      }
+
+      const id = $("#record-id").value;
+      let result;
+      if (id) {
+        result = await supabase.from("site_content").update(payload).eq("id", Number(id)).select("id").single();
+      } else {
+        result = await supabase.from("site_content").insert(payload).select("id").single();
+      }
+      if (result.error) {
+        message(`Save failed: ${result.error.message}`);
+      } else {
+        message("Content saved to Supabase. Public pages will display it after their CMS integration is added.", "success");
+        await loadItems();
+        resetForm();
+      }
+      saveButton.disabled = false;
+    });
+
+    $("#delete-button").addEventListener("click", async () => {
+      const id = $("#record-id").value;
+      if (!id || !confirm("Delete this content item permanently?")) return;
+      const { error } = await supabase.from("site_content").delete().eq("id", Number(id));
+      if (error) message(`Delete failed: ${error.message}`);
+      else {
+        message("Content item deleted.", "success");
+        resetForm();
+        await loadItems();
+      }
+    });
+    $("#new-button").addEventListener("click", () => { resetForm(); clearMessage(); $("#page-slug").focus(); });
+    $("#clear-button").addEventListener("click", resetForm);
+    $("#refresh-button").addEventListener("click", loadItems);
+    $("#logout-button").addEventListener("click", async () => {
+      await supabase.auth.signOut();
+      location.replace("./login.html");
+    });
+
+    const user = await requirePrincipal();
+    if (user) await loadItems();
+  </script>
+</body>
+                                                                                                                                                                              </html>
